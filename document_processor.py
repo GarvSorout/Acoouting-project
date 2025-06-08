@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
     def __init__(self):
+        logger.info("Initializing DocumentProcessor")
         self.amount_pattern = r'\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})?'
         self.date_patterns = [
             r'\d{2}/\d{2}/\d{4}',  # MM/DD/YYYY
@@ -30,8 +31,10 @@ class DocumentProcessor:
     def process_image(self, image_data: bytes) -> str:
         """Extract text from image using OCR"""
         try:
+            logger.info("Processing image with OCR")
             image = Image.open(io.BytesIO(image_data))
             text = pytesseract.image_to_string(image)
+            logger.info(f"Successfully extracted {len(text)} characters from image")
             return text
         except Exception as e:
             logger.error(f"Error processing image: {str(e)}")
@@ -40,6 +43,7 @@ class DocumentProcessor:
     def process_pdf(self, pdf_data: bytes) -> str:
         """Convert PDF to images and extract text using OCR"""
         try:
+            logger.info("Processing PDF document")
             # Save PDF data to temporary file
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
                 temp_pdf.write(pdf_data)
@@ -47,15 +51,18 @@ class DocumentProcessor:
 
             # Convert PDF to images
             images = pdf2image.convert_from_path(temp_pdf_path)
+            logger.info(f"Converted PDF to {len(images)} images")
             
             # Clean up temporary file
             os.unlink(temp_pdf_path)
 
             # Extract text from each image
             text = ""
-            for image in images:
+            for i, image in enumerate(images, 1):
+                logger.info(f"Processing page {i} of PDF")
                 text += pytesseract.image_to_string(image) + "\n"
 
+            logger.info(f"Successfully extracted {len(text)} characters from PDF")
             return text
         except Exception as e:
             logger.error(f"Error processing PDF: {str(e)}")
@@ -72,6 +79,7 @@ class DocumentProcessor:
                 amounts.append(amount)
             except ValueError:
                 continue
+        logger.info(f"Found {len(amounts)} amounts in text")
         return amounts
 
     def extract_dates(self, text: str) -> List[datetime]:
@@ -92,6 +100,7 @@ class DocumentProcessor:
                             continue
                 except Exception:
                     continue
+        logger.info(f"Found {len(dates)} dates in text")
         return dates
 
     def extract_invoice_numbers(self, text: str) -> List[str]:
@@ -102,22 +111,27 @@ class DocumentProcessor:
             for match in matches:
                 if len(match.groups()) > 0:
                     invoice_numbers.append(match.group(1))
+        logger.info(f"Found {len(invoice_numbers)} invoice numbers in text")
         return invoice_numbers
 
     def extract_vendor_name(self, text: str, subject: str, sender: str) -> Optional[str]:
         """Attempt to extract vendor name from various sources"""
+        logger.info("Attempting to extract vendor name")
         # First try to extract from email sender
         email_parts = sender.split('<')
         if len(email_parts) > 1:
             vendor_name = email_parts[0].strip()
             if vendor_name:
+                logger.info(f"Found vendor name from sender: {vendor_name}")
                 return vendor_name
 
         # Try to extract from subject
         if 'invoice' in subject.lower():
             parts = subject.split('from')
             if len(parts) > 1:
-                return parts[1].strip()
+                vendor_name = parts[1].strip()
+                logger.info(f"Found vendor name from subject: {vendor_name}")
+                return vendor_name
 
         # Look for common patterns in text
         patterns = [
@@ -129,13 +143,17 @@ class DocumentProcessor:
         for pattern in patterns:
             match = re.search(pattern, text)
             if match and match.group(1).strip():
-                return match.group(1).strip()
+                vendor_name = match.group(1).strip()
+                logger.info(f"Found vendor name from text: {vendor_name}")
+                return vendor_name
 
+        logger.warning("No vendor name found")
         return None
 
     def process_document(self, content: bytes, content_type: str, subject: str = "", sender: str = "") -> Dict:
         """Process document and extract relevant information"""
         try:
+            logger.info(f"Processing document of type: {content_type}")
             # Extract text based on content type
             if content_type.startswith('image/'):
                 text = self.process_image(content)
@@ -145,13 +163,17 @@ class DocumentProcessor:
                 logger.warning(f"Unsupported content type: {content_type}")
                 return {}
 
+            if not text:
+                logger.warning("No text extracted from document")
+                return {}
+
             # Extract information
             amounts = self.extract_amounts(text)
             dates = self.extract_dates(text)
             invoice_numbers = self.extract_invoice_numbers(text)
             vendor_name = self.extract_vendor_name(text, subject, sender)
 
-            return {
+            result = {
                 'text': text,
                 'amounts': amounts,
                 'dates': dates,
@@ -159,6 +181,9 @@ class DocumentProcessor:
                 'vendor_name': vendor_name,
                 'content_type': content_type
             }
+
+            logger.info(f"Document processing complete. Found: {len(amounts)} amounts, {len(dates)} dates, {len(invoice_numbers)} invoice numbers")
+            return result
 
         except Exception as e:
             logger.error(f"Error processing document: {str(e)}")

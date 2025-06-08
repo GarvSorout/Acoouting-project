@@ -3,14 +3,31 @@ import email
 import os
 from email.header import decode_header
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import logging
 from dotenv import load_dotenv
+import re
+from email.utils import parsedate_to_datetime
+from dataclasses import dataclass
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+@dataclass
+class Attachment:
+    filename: str
+    content: bytes
+    content_type: str
+
+@dataclass
+class Email:
+    id: str
+    subject: str
+    sender: str
+    date: Optional[datetime]
+    attachments: List[Attachment]
 
 class EmailMonitor:
     def __init__(self):
@@ -31,7 +48,7 @@ class EmailMonitor:
             logger.error(f"Failed to connect to email: {str(e)}")
             raise
 
-    def get_attachments(self, msg: email.message.Message) -> List[Dict]:
+    def get_attachments(self, msg: email.message.Message) -> List[Attachment]:
         """Extract attachments from email message"""
         attachments = []
         for part in msg.walk():
@@ -49,15 +66,43 @@ class EmailMonitor:
 
                 # Check if file type is supported
                 if filename.lower().endswith(('.pdf', '.jpg', '.jpeg', '.png', '.tiff')):
-                    attachments.append({
-                        'filename': filename,
-                        'content': part.get_payload(decode=True),
-                        'content_type': part.get_content_type()
-                    })
+                    attachments.append(Attachment(
+                        filename=filename,
+                        content=part.get_payload(decode=True),
+                        content_type=part.get_content_type()
+                    ))
         
         return attachments
 
-    def process_email(self, email_id: bytes, mail: imaplib.IMAP4_SSL) -> Dict:
+    def parse_date(self, date_str: str) -> Optional[datetime]:
+        """Parse email date string into datetime object"""
+        try:
+            # First try email.utils parser which handles most standard email date formats
+            return parsedate_to_datetime(date_str)
+        except (TypeError, ValueError):
+            # If that fails, try common date formats
+            date_formats = [
+                '%a, %d %b %Y %H:%M:%S %z',  # RFC 2822
+                '%a, %d %b %Y %H:%M:%S %Z',  # With timezone name
+                '%a, %d %b %Y %H:%M:%S',     # Without timezone
+                '%d %b %Y %H:%M:%S %z',      # Without weekday
+                '%Y-%m-%d %H:%M:%S',         # ISO-like format
+                '%d-%m-%Y %H:%M:%S'          # European format
+            ]
+            
+            # Remove timezone abbreviations in parentheses
+            date_str = re.sub(r'\([A-Z]{3,4}\)', '', date_str).strip()
+            
+            for fmt in date_formats:
+                try:
+                    return datetime.strptime(date_str, fmt)
+                except ValueError:
+                    continue
+            
+            logger.warning(f"Could not parse date: {date_str}")
+            return None
+
+    def process_email(self, email_id: bytes, mail: imaplib.IMAP4_SSL) -> Optional[Email]:
         """Process a single email and extract relevant information"""
         try:
             _, msg_data = mail.fetch(email_id, '(RFC822)')
@@ -72,24 +117,24 @@ class EmailMonitor:
 
             sender = msg.get("from", "")
             date_str = msg.get("date", "")
-            date = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %z") if date_str else None
+            date = self.parse_date(date_str) if date_str else None
 
             # Get attachments
             attachments = self.get_attachments(msg)
 
-            return {
-                'subject': subject,
-                'sender': sender,
-                'date': date,
-                'attachments': attachments,
-                'email_id': email_id.decode()
-            }
+            return Email(
+                id=email_id.decode(),
+                subject=subject,
+                sender=sender,
+                date=date,
+                attachments=attachments
+            )
 
         except Exception as e:
             logger.error(f"Error processing email {email_id}: {str(e)}")
             return None
 
-    def check_new_emails(self, folder: str = 'INBOX') -> List[Dict]:
+    def check_new_emails(self, folder: str = 'INBOX') -> List[Email]:
         """Check for new unread emails in specified folder"""
         mail = self.connect()
         try:
