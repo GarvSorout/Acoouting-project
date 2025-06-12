@@ -110,12 +110,12 @@ async def shutdown_event():
     """Cleanup on shutdown"""
     db.close()
 
-@app.get("/documents/pending", response_model=List[DocumentModel])
+@app.get("/documents/pending")
 def get_pending_documents(limit: int = 10):
     """Get pending documents"""
     try:
         documents = db.get_pending_documents(limit)
-        return documents
+        return {"documents": documents}
     except Exception as e:
         logger.error(f"Error fetching pending documents: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
